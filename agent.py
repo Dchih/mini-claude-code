@@ -1,52 +1,69 @@
 import os
 from anthropic import Anthropic
 from dotenv import load_dotenv
+from tools import TOOLS, TOOL_HANDLERS
 
 load_dotenv()
 
 client = Anthropic(base_url=os.getenv("ANTHROPIC_API_URL"), api_key=os.getenv("ANTHROPIC_API_KEY"))
 MODEL = os.environ["MODEL_ID"]
 
-TOOLS = [
-  {
-    "name" : "bash",
-    "description" : "Run a shell command and return its output.",
-    "input_schema" : {
-      "type" : "object",
-      "properties" : {
-        "command" : {
-          "type" : "string",
-          "description" : "The shell command to run."
-        }
-      },
-      "required" : ["command"]
-    }
-  }
-]
+SYSTEM = "You are a coding agent. Use the provided tools to solve tasks. Act, don't explain. Prefer read_file/write_file/edit_file over bash for file operations."
 
-SYSTEM = "You are a coding agent. Use bash to solve tasks. Act, don't explain."
-
-response = client.messages.create(
-    model=MODEL,
-    system=SYSTEM,
-    max_tokens=1000,
-    tools=TOOLS,
-    messages=[
-        {
+def agent_loop(messages: list):
+    while True:
+        response = client.messages.create(
+            model=MODEL,
+            system=SYSTEM,
+            max_tokens=8000,
+            tools=TOOLS,
+            messages=messages
+        )
+        messages.append({
+            "role": "assistant",
+            "content": response.content
+        })
+        if response.stop_reason != "tool_use":
+            break
+        results = []
+        for block in response.content:
+            if block.type == "tool_use":
+                handler = TOOL_HANDLERS.get(block.name)
+                if not handler:
+                    output = f"Unknown tool: {block.name}"
+                else:
+                    print(f"\033[33m[{block.name}] {block.input}\033[0m")
+                    output = handler(**block.input)
+                    print(output[:200])
+                results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": output
+                })
+        messages.append({
             "role": "user",
-            "content": "列出当前目录的所有文件"
-        }
-    ]
-)
+            "content": results
+        })
 
-print(f"停止原因: {response.stop_reason}")
-print()
-
-for block in response.content: 
-    print(f"类型：{block.type}")
-    if block.type == "text": 
-        print(f"内容：{block.text}")
-    elif block.type == "tool_use":
-        print(f"工具名称：{block.name}")
-        print(f"参数：{block.input}")
-        print(f"工具调用ID：{block.id}")
+if __name__ == "__main__":
+    history = []
+    print("Mini Claude Code Agent (输入 q 退出)")
+    print("=" * 40)
+    while True:
+        try:
+            query = input("\033[36m>>> \033[0m")
+        except (EOFError, KeyboardInterrupt):
+            break
+        if query.strip().lower() in ("q", "exit", ""):
+            break
+        history.append({
+            "role": "user",
+            "content": query
+        })
+        agent_loop(history)
+        last = history[-1]["content"]
+        if isinstance(last, list):
+            for block in last:
+                if hasattr(block, "text"):
+                    print(block.text)
+        print()
