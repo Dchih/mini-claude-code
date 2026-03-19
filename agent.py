@@ -8,9 +8,10 @@ load_dotenv()
 client = Anthropic(base_url=os.getenv("ANTHROPIC_API_URL"), api_key=os.getenv("ANTHROPIC_API_KEY"))
 MODEL = os.environ["MODEL_ID"]
 
-SYSTEM = "You are a coding agent. Use the provided tools to solve tasks. Act, don't explain. Prefer read_file/write_file/edit_file over bash for file operations."
+SYSTEM = "You are a coding agent. Use the provided tools to solve tasks. Act, don't explain. Prefer read_file/write_file/edit_file over bash for file operations. Use the todo tool to track progress on multi-step tasks."
 
 def agent_loop(messages: list):
+    rounds_slice_todo = 0
     while True:
         response = client.messages.create(
             model=MODEL,
@@ -25,7 +26,10 @@ def agent_loop(messages: list):
         })
         if response.stop_reason != "tool_use":
             break
+
         results = []
+        used_todo = False
+
         for block in response.content:
             if block.type == "tool_use":
                 handler = TOOL_HANDLERS.get(block.name)
@@ -33,13 +37,28 @@ def agent_loop(messages: list):
                     output = f"Unknown tool: {block.name}"
                 else:
                     print(f"\033[33m[{block.name}] {block.input}\033[0m")
-                    output = handler(**block.input)
+                    try:
+                        output = handler(**block.input)
+                    except Exception as e:
+                        output = f"Error: {e}"
                     print(output[:200])
                 results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
                     "content": output
                 })
+
+                if block.name == "todo":
+                    used_todo = True
+
+        rounds_slice_todo = 0 if used_todo else rounds_slice_todo + 1
+
+        if rounds_slice_todo >= 3:
+            results.insert(0, {
+                "type": "text",
+                "text": "<reminder>Update your todos.</reminder>"
+            })
+
         messages.append({
             "role": "user",
             "content": results

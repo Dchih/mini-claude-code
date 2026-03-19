@@ -1,6 +1,7 @@
 import os
 import subprocess
 from pathlib import Path
+from todo import TODO
 
 WORKDIR = Path.cwd()
 
@@ -56,6 +57,28 @@ TOOLS = [
           "required": ["path", "old_text", "new_text"],
       },
   },
+  {
+      "name": "todo",
+      "description": "Track your task progress. Send the FULL list each time (create/update/delete by inclusion).",
+      "input_schema": {
+          "type": "object",
+          "properties": {
+              "items": {
+                  "type": "array",
+                  "items": {
+                      "type": "object",
+                      "properties": {
+                          "id": {"type": "string"},
+                          "text": {"type": "string"},
+                          "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
+                      },
+                      "required": ["id", "text", "status"],
+                  },
+              },
+          },
+          "required": ["items"],
+      },
+  },
 ]
 
 def safe_path(p: str) -> Path:
@@ -98,37 +121,28 @@ def run_bash(command: str) -> str:
     if any(d in command for d in dangerous):
         return "命令被禁止执行。"
     try:
-        if "\n" in command:
-            r = subprocess.run(
-                ["bash", "-c", command],
-                cwd=os.getcwd(),
-                capture_output=True,
-                text=True,
-                timeout=120,
-                encoding='utf-8',
-                errors='replace'
-            )
-        else:
-            r = subprocess.run(
-                command,
-                shell=True,
-                cwd=os.getcwd(),
-                capture_output=True,
-                text=True,
-                timeout=120,
-                encoding='utf-8',
-                errors='replace'
-            )
+        r = subprocess.run(
+            ["bash", "-c", command],
+            cwd=os.getcwd(),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            encoding='utf-8',
+            errors='replace'
+        )
         out = ((r.stdout or "") + (r.stderr or "")).strip()
         if not out and r.returncode != 0:
             return f"command failed with exit code {r.returncode}"
         return out[:50000] if out else "no output"
     except subprocess.TimeoutExpired:
         return "timeout 120s"
+    except Exception as e:
+        return f"Error: {e}"
 
 TOOL_HANDLERS = {
     "bash":       lambda **kw: run_bash(kw["command"]),
     "read_file":  lambda **kw: run_read(kw["path"], kw.get("limit")),
     "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
     "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
+    "todo":       lambda **kw: TODO.update(kw["items"]),
 }
