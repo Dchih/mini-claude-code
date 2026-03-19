@@ -106,7 +106,7 @@ def run_read(path: str, limit: int = None) -> str:
         lines = safe_path(path).read_text(encoding="utf-8").splitlines()
         if limit and limit < len(lines):
             lines = lines[:limit] + [f"...({len(lines) - limit} more lines)"]
-        return "\n".join(lines)[:50000]
+        return "\n".join(lines)[:10000]
     except Exception as e:
         return f"Error: {e}"
 
@@ -147,7 +147,7 @@ def run_bash(command: str) -> str:
         out = ((r.stdout or "") + (r.stderr or "")).strip()
         if not out and r.returncode != 0:
             return f"command failed with exit code {r.returncode}"
-        return out[:50000] if out else "no output"
+        return out[:10000] if out else "no output"
     except subprocess.TimeoutExpired:
         return "timeout 120s"
     except Exception as e:

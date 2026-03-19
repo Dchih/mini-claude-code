@@ -1,4 +1,5 @@
 import os
+import httpx
 from anthropic import Anthropic
 from dotenv import load_dotenv
 from tools import TOOLS, TOOL_HANDLERS
@@ -36,17 +37,49 @@ You are a autonomous coding agent operating in a command-line environment.
 - When reporting results, show what changed, not what you thought about.
 """
 
+MAX_HISTORY = 20  # max message pairs to keep
+
+def _estimate_len(content) -> int:
+    """Rough char-length estimate for a message's content."""
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        total = 0
+        for block in content:
+            if isinstance(block, dict):
+                total += len(str(block.get("content", ""))) + len(str(block.get("text", "")))
+            else:
+                total += len(getattr(block, "text", ""))
+        return total
+    return 0
+
+def trim_history(messages: list):
+    """Keep the first user message and the most recent MAX_HISTORY messages."""
+    if len(messages) <= MAX_HISTORY:
+        return
+    # Always preserve the first user message for context
+    first = messages[0]
+    recent = messages[-MAX_HISTORY + 1:]
+    # Make sure we start with a user message
+    while recent and recent[0].get("role") != "user":
+        recent.pop(0)
+    messages.clear()
+    messages.append(first)
+    messages.extend(recent)
+
 def agent_loop(messages: list, tools=None, tool_handlers=None):
     tools = tools or TOOLS
     tool_handlers = tool_handlers or TOOL_HANDLERS
     rounds_slice_todo = 0
     while True:
+        trim_history(messages)
         response = client.messages.create(
             model=MODEL,
             system=SYSTEM,
-            max_tokens=8000,
+            max_tokens=20000,
             tools=tools,
-            messages=messages
+            messages=messages,
+            timeout=httpx.Timeout(timeout=600.0, connect=5.0)
         )
         messages.append({
             "role": "assistant",
@@ -70,6 +103,8 @@ def agent_loop(messages: list, tools=None, tool_handlers=None):
                     except Exception as e:
                         output = f"Error: {e}"
                     print(output[:200])
+                if len(output) > 10000:
+                    output = output[:10000] + f"\n... (truncated, {len(output)} chars total)"
                 results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
