@@ -58,6 +58,20 @@ TOOLS = [
       },
   },
   {
+      "name": "subagent",
+      "description": "Spawn a sub-agent to handle a complex subtask independently. It has access to all tools except subagent itself. Use this for parallel-style subtasks or isolated work.",
+      "input_schema": {
+          "type": "object",
+          "properties": {
+              "task": {
+                  "type": "string",
+                  "description": "A clear, self-contained task description for the sub-agent",
+              },
+          },
+          "required": ["task"],
+      },
+  },
+  {
       "name": "todo",
       "description": "Track your task progress. Send the FULL list each time (create/update/delete by inclusion).",
       "input_schema": {
@@ -89,7 +103,7 @@ def safe_path(p: str) -> Path:
 
 def run_read(path: str, limit: int = None) -> str:
     try:
-        lines = safe_path(path).read_text().splitlines()
+        lines = safe_path(path).read_text(encoding="utf-8").splitlines()
         if limit and limit < len(lines):
             lines = lines[:limit] + [f"...({len(lines) - limit} more lines)"]
         return "\n".join(lines)[:50000]
@@ -100,7 +114,7 @@ def run_write(path: str, content: str) -> str:
     try:
         fp = safe_path(path)
         fp.parent.mkdir(parents=True, exist_ok=True)
-        fp.write_text(content)
+        fp.write_text(content, encoding="utf-8")
         return f"Wrote {len(content)} bytes to {path}"
     except Exception as e:
         return f"Error: {e}"
@@ -108,10 +122,10 @@ def run_write(path: str, content: str) -> str:
 def run_edit(path: str, old_text: str, new_text: str) -> str:
     try:
         fp = safe_path(path)
-        content = fp.read_text()
+        content = fp.read_text(encoding="utf-8")
         if old_text not in content:
             return f"Error: Text not found in {path}"
-        fp.write_text(content.replace(old_text, new_text))
+        fp.write_text(content.replace(old_text, new_text), encoding="utf-8")
         return f"Edited {path}"
     except Exception as e:
         return f"Error: {e}"
@@ -139,10 +153,16 @@ def run_bash(command: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+def _run_subagent(task: str) -> str:
+    """Lazy import to break circular dependency: agent -> tools -> agent."""
+    from subagent import spawn_subagent
+    return spawn_subagent(task)
+
 TOOL_HANDLERS = {
     "bash":       lambda **kw: run_bash(kw["command"]),
     "read_file":  lambda **kw: run_read(kw["path"], kw.get("limit")),
     "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
     "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
     "todo":       lambda **kw: TODO.update(kw["items"]),
+    "subagent":   lambda **kw: _run_subagent(kw["task"])
 }
