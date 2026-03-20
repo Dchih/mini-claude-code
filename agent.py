@@ -39,20 +39,6 @@ You are a autonomous coding agent operating in a command-line environment.
 
 MAX_HISTORY = 20  # max message pairs to keep
 
-def _estimate_len(content) -> int:
-    """Rough char-length estimate for a message's content."""
-    if isinstance(content, str):
-        return len(content)
-    if isinstance(content, list):
-        total = 0
-        for block in content:
-            if isinstance(block, dict):
-                total += len(str(block.get("content", ""))) + len(str(block.get("text", "")))
-            else:
-                total += len(getattr(block, "text", ""))
-        return total
-    return 0
-
 def trim_history(messages: list):
     """Keep the first user message and the most recent MAX_HISTORY messages."""
     if len(messages) <= MAX_HISTORY:
@@ -113,6 +99,11 @@ def agent_loop(messages: list, tools=None, tool_handlers=None):
 
                 if block.name == "todo":
                     used_todo = True
+                
+                if block.name == "load_skill":
+                    print(f"\033[35m> load_skill({block.input['name']}): loaded {len(str(output))} chars\033[0m")
+                else:
+                    print(f"\033[33m> {block.name}: {str(output)[:200]}\033[0m")
 
         rounds_slice_todo = 0 if used_todo else rounds_slice_todo + 1
 

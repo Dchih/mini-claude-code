@@ -2,6 +2,7 @@ import os
 import subprocess
 from pathlib import Path
 from todo import TODO
+from skillLoader import SKILL_LOADER
 
 WORKDIR = Path.cwd()
 
@@ -93,6 +94,20 @@ TOOLS = [
           "required": ["items"],
       },
   },
+  {
+        "name": "load_skill",
+        "description": "Load specialized knowledge by name. Use this before tackling tasks that match an available skill.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Skill name to load (from the available skills list)"
+                }
+            },
+            "required": ["name"],
+        },
+    },
 ]
 
 def safe_path(p: str) -> Path:
@@ -164,5 +179,6 @@ TOOL_HANDLERS = {
     "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
     "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
     "todo":       lambda **kw: TODO.update(kw["items"]),
-    "subagent":   lambda **kw: _run_subagent(kw["task"])
+    "subagent":   lambda **kw: _run_subagent(kw["task"]),
+    "load_skill": lambda **kw: SKILL_LOADER.get_content(kw["name"])
 }
