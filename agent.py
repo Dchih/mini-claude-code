@@ -1,5 +1,18 @@
 from pathlib import Path
+from openai import OpenAI
 
 
-ANTHROPIC_KEY = "73bb587541614664b6aeddf0d89e47e2.nbHQZpAarVbtaYBi"
+client = OpenAI(
+  api_key=ANTHROPIC_KEY,
+  base_url="https://open.bigmodel.cn/api/paas/v4"
+)
 
+systemPropmt = ""
+
+while True: {
+
+  response = client.chat.completions.create({
+    model="GLM-5.1",
+
+  })
+}
