@@ -40,22 +40,21 @@ def main_loop(contexts):
       return
     
     message = response.choices[0].message
-    finish_reason = response.choices[0].finish_reason
 
     contexts.append({"role": "assistant", "content": message.content})
 
-    if finish_reason == "tool_calls":
+    if message.tool_calls:
       print("需要调用工具")
 
-    elif finish_reason == "stop":
+    elif message.content:
       print(message.content)
 
-    elif finish_reason == "length":
-      print("compact")
-
     else:
-      print(f"异常结束：{finish_reason}")
+      handle_empty(message)
 
+
+def handle_empty(message):
+  print(f"error: {message}")
 
 if __name__ == "__main__":                                                                                                                                                                                         
       main_loop(contexts) 
