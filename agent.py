@@ -16,17 +16,21 @@ client = OpenAI(
 SystemPropmt = "你是一个专业的代码助手"
 MODEL = "GLM-5.1"
 UserPrompt=""
-contexts = [{"role": "system", "content": SystemPropmt}]
+state = {
+  "messages": [{"role": "system", "content": SystemPropmt}],
+  "tool_count": 1,
+  "transition_reason": None
+}
 
-def main_loop(contexts):
+def main_loop(state):
   while True:
     UserPrompt = input()
-    contexts.append({"role": "user", "content": UserPrompt})
+    state.messages.append({"role": "user", "content": UserPrompt})
 
     try: 
       response = client.chat.completions.create(
         model=MODEL,
-        messages=contexts,
+        messages=state.messages,
         temperature=0.7,
         max_tokens=4096,
         stream=False,
@@ -41,8 +45,6 @@ def main_loop(contexts):
     
     message = response.choices[0].message
 
-    contexts.append({"role": "assistant", "content": message.content})
-
     if message.tool_calls:
       print("需要调用工具")
 
@@ -52,12 +54,15 @@ def main_loop(contexts):
     else:
       handle_empty(message)
 
+    state.messages.append({"role": "assistant", "content": message.content})
+    state["turn_count"] += 1
+    state["trasition_reason"] = "tool_result"
 
 def handle_empty(message):
   print(f"error: {message}")
 
 if __name__ == "__main__":                                                                                                                                                                                         
-      main_loop(contexts) 
+      main_loop(state) 
 
 
 
