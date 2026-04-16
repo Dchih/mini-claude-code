@@ -9,6 +9,10 @@ from dotenv import load_dotenv
 import json
 from prompt_toolkit import prompt as pt_prompt
 from tool_use import TOOL_HANDLES, TOOL_DEFINITIONS, WORKDIR
+from permissions import (
+  RiskLevel, PermissionStore,
+  assess_risk, confirm_permission, get_risk_key,
+)
 
 load_dotenv()
 
@@ -19,26 +23,46 @@ client = OpenAI(
   base_url="https://open.bigmodel.cn/api/paas/v4"
 )
 
+def _display_width(s: str) -> int:
+  """计算字符串的终端显示宽度（CJK 字符占 2 列）"""
+  width = 0
+  for ch in s:
+    cp = ord(ch)
+    # CJK Unified Ideographs / 全角标点 / 常见宽字符范围
+    if (0x1100 <= cp <= 0x115F or 0x2E80 <= cp <= 0x303E or
+        0x3040 <= cp <= 0xA4CF or 0xAC00 <= cp <= 0xD7A3 or
+        0xF900 <= cp <= 0xFAFF or 0xFE10 <= cp <= 0xFE1F or
+        0xFE30 <= cp <= 0xFE4F or 0xFF00 <= cp <= 0xFF60 or
+        0xFFE0 <= cp <= 0xFFE6 or 0x1F300 <= cp <= 0x1F9FF):
+      width += 2
+    else:
+      width += 1
+  return width
+
+
 def spinner_context(label="思考中"):
   """上下文管理器：在 with 块执行期间显示旋转动画"""
   stop = threading.Event()
+  # 预计算清除宽度：spinner 字符(1) + 空格(1) + label + "..."(3)
+  clear_width = 1 + 1 + _display_width(label) + 3
 
-  def _spin():
+  def _spin(t_ref):
     frames = itertools.cycle("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
     while not stop.is_set():
       sys.stdout.write(f"\r{next(frames)} {label}...")
       sys.stdout.flush()
       time.sleep(0.08)
-    sys.stdout.write("\r" + " " * (len(label) + 6) + "\r")
+    sys.stdout.write("\r" + " " * clear_width + "\r")
     sys.stdout.flush()
 
   class _Ctx:
     def __enter__(self):
-      threading.Thread(target=_spin, daemon=True).start()
+      self._t = threading.Thread(target=_spin, args=(None,), daemon=True)
+      self._t.start()
       return self
     def __exit__(self, *_):
       stop.set()
-      time.sleep(0.1)  # 等动画线程写完最后一帧
+      self._t.join()  # 等线程完成清行后再返回
 
   return _Ctx()
 
@@ -92,21 +116,21 @@ def validate_message_sequence(messages: list[dict]) -> None:
       raise ValueError(f"system 消息只能出现在开头，但在索引 {i} 处发现")
 
   # --- 收集 assistant 的 tool_call_id 集合，以及 tool 消息引用的 id ---
-  assistant_tool_call_ids = []   # 所有 assistant 发出的 tool_call.id
-  tool_result_ids = []           # 所有 tool 消息引用的 tool_call_id
+  assistant_tool_call_ids = set()   # 所有 assistant 发出的 tool_call.id
+  tool_result_ids = set()           # 所有 tool 消息引用的 tool_call_id
 
   for i, msg in enumerate(messages):
     role = msg["role"]
 
     if role == "assistant" and msg.get("tool_calls"):
       for tc in msg["tool_calls"]:
-        assistant_tool_call_ids.append(tc["id"])
+        assistant_tool_call_ids.add(tc["id"])
 
     if role == "tool":
       tc_id = msg.get("tool_call_id")
       if not tc_id:
         raise ValueError(f"索引 {i} 的 tool 消息缺少 tool_call_id")
-      tool_result_ids.append(tc_id)
+      tool_result_ids.add(tc_id)
 
       # tool 消息前面必须能追溯到带 tool_calls 的 assistant（中间可以有其他 tool 消息）
       preceding_assistant = next(
@@ -151,12 +175,83 @@ def normalize_messages(messages: list[dict]) -> list[dict]:
 
 
 # ──────────────────────────────────────────────
+# 过程输出辅助函数
+# ──────────────────────────────────────────────
+
+# 工具名到图标/颜色的映射
+TOOL_STYLE = {
+  "bash":       ("⚙️ ",  "\033[33m"),   # 黄色
+  "read_file":  ("📖",  "\033[36m"),   # 青色
+  "write_file": ("✏️ ",  "\033[32m"),   # 绿色
+  "edit_file":  ("🔧",  "\033[35m"),   # 紫色
+  "git":        ("🔀",  "\033[34m"),   # 蓝色
+}
+RESET = "\033[0m"
+DIM   = "\033[2m"
+
+
+def _short_preview(text: str, max_len: int = 120) -> str:
+  """截断长文本为单行预览"""
+  one_line = text.replace("\n", "↵ ").strip()
+  if len(one_line) > max_len:
+    return one_line[:max_len] + "…"
+  return one_line
+
+
+def _print_tool_call(name: str, args: dict, idx: int, total: int):
+  """打印工具调用的过程信息"""
+  icon, color = TOOL_STYLE.get(name, ("👉", "\033[37m"))
+  tag = f"{icon}{name}"
+
+  # 根据工具类型提取关键参数做摘要
+  summary = ""
+  if name == "bash":
+    summary = _short_preview(args.get("command", ""), 80)
+  elif name == "read_file":
+    path = args.get("path", "")
+    limit = args.get("limit")
+    summary = path + (f" (limit={limit})" if limit else "")
+  elif name == "write_file":
+    path = args.get("path", "")
+    content_len = len(args.get("content", ""))
+    summary = f"{path} ({content_len} chars)"
+  elif name == "edit_file":
+    path = args.get("path", "")
+    old_preview = _short_preview(args.get("old_text", ""), 40)
+    summary = f"{path}  ← {old_preview}"
+  elif name == "git":
+    summary = _short_preview(args.get("command", ""), 80)
+
+  counter = f"[{idx}/{total}] " if total > 1 else ""
+  print(f"\n{DIM}{counter}{color}{tag}{RESET}{DIM} {summary}{RESET}")
+
+
+def _print_tool_result(name: str, output: str):
+  """打印工具执行结果的摘要"""
+  icon, _ = TOOL_STYLE.get(name, ("👉", ""))
+  # 截取前几行作为预览
+  lines = output.strip().splitlines()
+  preview_lines = lines[:5]
+  preview = "\n".join(preview_lines)
+  if len(lines) > 5:
+    preview += f"\n  ... ({len(lines) - 5} more lines)"
+
+  # 如果输出很短就直接显示，否则折叠
+  if len(output) < 200:
+    print(f"{DIM}  ↳ {preview}{RESET}")
+  else:
+    print(f"{DIM}  ↳ {preview}{RESET}")
+    print(f"{DIM}  ({len(output)} chars total){RESET}")
+
+
+# ──────────────────────────────────────────────
 # 主循环
 # ──────────────────────────────────────────────
 
 state = {
   "messages": [{"role": "system", "content": SystemPrompt}],
   "pending_tool_calls": False,  # 标记上一轮是否有未完成的 tool_calls
+  "permissions": PermissionStore(),  # 会话级权限存储
 }
 
 
@@ -196,9 +291,10 @@ def main_loop(state):
     except Exception as e:
       print(f"请求失败: {e}")
       # 如果是 400 错误，尝试修复消息历史
-      if "400" in str(e):
+      if hasattr(e, "status_code") and e.status_code == 400:
         print("[尝试修复消息历史...]")
         _repair_messages(state)
+        continue
       break
 
     if not response.choices or len(response.choices) == 0:
@@ -206,6 +302,10 @@ def main_loop(state):
       break
 
     message = response.choices[0].message
+
+    # ── 如果 assistant 有文本内容，先展示 ──
+    if message.content:
+      print(f"\n{message.content}")
 
     if message.tool_calls:
       # ✅ 关键修复：必须先将带 tool_calls 的 assistant 消息追加到历史
@@ -227,20 +327,43 @@ def main_loop(state):
       state["messages"].append(assistant_msg)
 
       # 执行每个 tool_call 并追加 tool_result
-      for tc in message.tool_calls:
+      for idx, tc in enumerate(message.tool_calls, 1):
         handler = TOOL_HANDLES.get(tc.function.name)
         try:
           args = json.loads(tc.function.arguments)
         except json.JSONDecodeError:
           args = {}
 
+        # ── 过程输出：工具调用开始 ──
+        _print_tool_call(tc.function.name, args, idx, len(message.tool_calls))
+
+        # ── 权限检查 ──
+        risk = assess_risk(tc.function.name, args)
+        if risk == RiskLevel.DANGEROUS:
+          allowed = confirm_permission(
+            tc.function.name, args, state["permissions"]
+          )
+          if not allowed:
+            output = "error: permission denied by user"
+            _print_tool_result(tc.function.name, output)
+            state["messages"].append({
+              "role": "tool",
+              "tool_call_id": tc.id,
+              "content": output,
+            })
+            continue
+
         if handler:
           try:
-            output = handler(**args)
+            with spinner_context("执行中"):
+              output = handler(**args)
           except Exception as e:
             output = f"error: tool execution failed: {e}"
         else:
           output = f"error: unknown tool: {tc.function.name}"
+
+        # ── 过程输出：工具调用结果 ──
+        _print_tool_result(tc.function.name, output)
 
         # ✅ 每个 tool_use 都必须有匹配的 tool_result（通过 tool_call_id 关联）
         state["messages"].append({
@@ -252,7 +375,6 @@ def main_loop(state):
       state["pending_tool_calls"] = True
 
     elif message.content:
-      print(message.content)
       state["messages"].append({
         "role": "assistant",
         "content": message.content,
