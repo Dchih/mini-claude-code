@@ -1,6 +1,9 @@
 import os
 import sys
 import time
+import select
+import tty
+import termios
 import threading
 import itertools
 from pathlib import Path
@@ -29,7 +32,6 @@ def _display_width(s: str) -> int:
   width = 0
   for ch in s:
     cp = ord(ch)
-    # CJK Unified Ideographs / 全角标点 / 常见宽字符范围
     if (0x1100 <= cp <= 0x115F or 0x2E80 <= cp <= 0x303E or
         0x3040 <= cp <= 0xA4CF or 0xAC00 <= cp <= 0xD7A3 or
         0xF900 <= cp <= 0xFAFF or 0xFE10 <= cp <= 0xFE1F or
@@ -41,31 +43,62 @@ def _display_width(s: str) -> int:
   return width
 
 
-def spinner_context(label="思考中"):
-  """上下文管理器：在 with 块执行期间显示旋转动画"""
-  stop = threading.Event()
-  # 预计算清除宽度：spinner 字符(1) + 空格(1) + label + "..."(3)
-  clear_width = 1 + 1 + _display_width(label) + 3
+def _call_with_spinner(fn, label="思考中"):
+  """
+  在后台线程执行 fn()，主线程显示 spinner 并监听 ESC。
+  ESC 或 Ctrl-C 时抛出 KeyboardInterrupt，fn() 的结果正常返回。
+  """
+  result = [None]
+  error: list[Exception | None] = [None]
+  done = threading.Event()
 
-  def _spin(t_ref):
-    frames = itertools.cycle("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-    while not stop.is_set():
-      sys.stdout.write(f"\r{next(frames)} {label}...")
+  def _worker():
+    try:
+      result[0] = fn()
+    except Exception as e:
+      error[0] = e
+    finally:
+      done.set()
+
+  threading.Thread(target=_worker, daemon=True).start()
+
+  hint = " Esc 中断"
+  full_text = f"⠋ {label}...{hint}"
+  clear_width = _display_width(full_text) + 2
+  frames = itertools.cycle("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+  cancelled = False
+
+  if sys.stdin.isatty():
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+      tty.setcbreak(fd)
+      while not done.is_set():
+        sys.stdout.write(f"\r{next(frames)} {label}...{hint}")
+        sys.stdout.flush()
+        r, _, _ = select.select([sys.stdin], [], [], 0.08)
+        if r:
+          ch = sys.stdin.read(1)
+          if ord(ch) == 27:  # ESC
+            cancelled = True
+            break
+    except KeyboardInterrupt:
+      cancelled = True
+    finally:
+      termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+      sys.stdout.write("\r" + " " * clear_width + "\r")
       sys.stdout.flush()
-      time.sleep(0.08)
-    sys.stdout.write("\r" + " " * clear_width + "\r")
-    sys.stdout.flush()
+  else:
+    # 非 tty 环境（管道 / 测试）：静默等待
+    done.wait()
 
-  class _Ctx:
-    def __enter__(self):
-      self._t = threading.Thread(target=_spin, args=(None,), daemon=True)
-      self._t.start()
-      return self
-    def __exit__(self, *_):
-      stop.set()
-      self._t.join()  # 等线程完成清行后再返回
+  if cancelled:
+    raise KeyboardInterrupt
 
-  return _Ctx()
+  done.wait()
+  if error[0] is not None:
+    raise error[0]
+  return result[0]
 
 
 _input_kb = KeyBindings()
@@ -289,15 +322,17 @@ def main_loop(state):
       continue
 
     try:
-      with spinner_context("思考中"):
-        response = client.chat.completions.create(
+      response = _call_with_spinner(
+        lambda: client.chat.completions.create(
           model=MODEL,
           messages=clean_messages,
           tools=TOOL_DEFINITIONS,
           temperature=0.7,
           max_tokens=4096,
           stream=False,
-        )
+        ),
+        "思考中",
+      )
     except Exception as e:
       print(f"请求失败: {e}")
       # 如果是 400 错误，尝试修复消息历史
@@ -365,8 +400,7 @@ def main_loop(state):
 
         if handler:
           try:
-            with spinner_context("执行中"):
-              output = handler(**args)
+            output = _call_with_spinner(lambda: handler(**args), "执行中")
           except Exception as e:
             output = f"error: tool execution failed: {e}"
         else:

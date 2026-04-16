@@ -314,7 +314,10 @@ def confirm_permission(tool_name: str, args: dict, store: PermissionStore) -> bo
     options = [("y", "允许一次"), ("a", "始终允许"), ("n", "拒绝"), ("v", "查看详情")]
     choice = _pick(options)
 
-    if choice is None or choice == "n":
+    if choice is None:
+      print(f"\n  {RED}✗ 已中断{RESET}")
+      raise KeyboardInterrupt
+    if choice == "n":
       print(f"\n  {RED}✗ 已拒绝{RESET}")
       return False
     elif choice == "y":
