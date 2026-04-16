@@ -76,8 +76,8 @@ def assess_risk(tool_name: str, args: dict) -> RiskLevel:
   Returns:
     RiskLevel.SAFE 或 RiskLevel.DANGEROUS
   """
-  # read_file 始终安全
-  if tool_name == "read_file":
+  # read_file / project_memory 始终安全
+  if tool_name in ("read_file", "project_memory"):
     return RiskLevel.SAFE
 
   # todo 始终安全（只是状态管理，不涉及文件/命令操作）

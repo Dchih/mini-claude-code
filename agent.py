@@ -17,6 +17,7 @@ from permissions import (
   RiskLevel, PermissionStore,
   assess_risk, confirm_permission, get_risk_key,
 )
+from compaction import maybe_compact
 from todo import TodoStore
 
 load_dotenv()
@@ -115,6 +116,17 @@ SystemPrompt = (
   f"你是一个专业的代码助手, 当前工作路径是: {WORKDIR} "
   f"你没有任何关于文件内容的先验知识。"
   f"读取文件前必须调用 read_file 工具，禁止猜测文件内容。\n\n"
+  f"## 记忆规范\n"
+  f"**会话开始时（第一轮必做）：**\n"
+  f"1. project_memory(action='load', scope='project')\n"
+  f"   - 'no_summary' → 阅览项目后立即 save project\n"
+  f"   - 有内容 → 直接使用，无需重复阅览已知文件\n"
+  f"2. project_memory(action='load', scope='session')\n"
+  f"   - 'no_summary' → 新会话，从用户输入开始\n"
+  f"   - 有内容 → 告知用户上次进度，询问是否继续\n\n"
+  f"**会话过程中：**\n"
+  f"- 完成每个重要步骤后：save session（更新进度）\n"
+  f"- 新增模块/重构/修改接口后：save project（更新项目知识）\n\n"
   f"## 待办任务规范\n"
   f"当用户提出多步骤任务时，你必须：\n"
   f"1. 先用 todo 工具创建待办列表，将任务拆解为有序步骤\n"
@@ -355,7 +367,13 @@ def main_loop(state):
         break
       state["messages"].append({"role": "user", "content": user_input})
 
-    # 发送前规范化消息
+    # 发送前压缩 + 规范化消息
+    state["messages"], compacted = maybe_compact(state["messages"], client, MODEL)
+    if compacted == "trim":
+      print(f"{DIM}[已裁剪旧消息]{RESET}")
+    elif compacted == "compact":
+      print(f"{DIM}[已压缩对话历史]{RESET}")
+
     try:
       clean_messages = normalize_messages(state["messages"])
     except ValueError as e:

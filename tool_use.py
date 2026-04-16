@@ -1,8 +1,13 @@
 from pathlib import Path
+from datetime import datetime
 import subprocess
 from todo import run_todo, set_global_store, TodoStore
 
 WORKDIR = Path.cwd()
+_PROJECT_FILE  = Path.home() / ".mini-claude-code" / "project"  / f"{WORKDIR.name}.md"
+_SESSION_DIR   = Path.home() / ".mini-claude-code" / "sessions" / WORKDIR.name
+_SESSION_FILE  = _SESSION_DIR / "current.md"
+_SESSION_KEEP  = 10   # 最多保留多少条历史 session
 
 def safe_path(p: str) -> Path:
   path = (WORKDIR / p).resolve()
@@ -55,6 +60,44 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
   except UnicodeDecodeError as e:
     return f"error: failed to decode file {path}: {e}"
 
+def run_project_memory(action: str, scope: str = "project", content: str = "") -> str:
+  """
+  读写项目知识库。
+  scope=project : 长期项目知识，跨会话有效
+  scope=session : 当前会话进度，每次会话独立可 resume
+  """
+  if scope == "project":
+    path = _PROJECT_FILE
+  elif scope == "session":
+    path = _SESSION_FILE
+  else:
+    return f"error: unknown scope '{scope}'，只支持 project / session"
+
+  if action == "load":
+    if not path.exists():
+      return "no_summary"
+    return path.read_text(encoding="utf-8")
+
+  elif action == "save":
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # session 存档：覆盖前先归档旧文件
+    if scope == "session" and path.exists():
+      ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+      path.rename(_SESSION_DIR / f"{ts}.md")
+      # 只保留最近 N 条归档
+      archives = sorted(
+        (p for p in _SESSION_DIR.glob("????????_??????.md")),
+        key=lambda p: p.name,
+      )
+      for old in archives[:-_SESSION_KEEP]:
+        old.unlink()
+    path.write_text(content, encoding="utf-8")
+    return f"saved ({scope}): {path}"
+
+  else:
+    return f"error: unknown action '{action}'，只支持 load / save"
+
+
 def run_git(command: str) -> str:
   """在工作目录下执行 git 命令，自动指定 -C 和 --no-pager"""
   full_cmd = f"git -C {WORKDIR} --no-pager {command}"
@@ -66,6 +109,7 @@ TOOL_HANDLES = {
   "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
   "edit_file": lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
   "git": lambda **kw: run_git(kw["command"]),
+  "project_memory": lambda **kw: run_project_memory(kw["action"], kw.get("content", "")),
   "todo": lambda **kw: run_todo(
     kw["action"],
     id=kw.get("id", ""),
@@ -148,6 +192,42 @@ TOOL_DEFINITIONS = [
           "command": {"type": "string", "description": "git 子命令及参数，如 'log --oneline -10'、'diff'、'status'"}
         },
         "required": ["command"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "project_memory",
+      "description": (
+        "读写两类记忆：\n"
+        "  scope=project：项目长期知识（架构/模块/约定），跨会话有效。\n"
+        "  scope=session：当前会话进度（任务/决定/下一步），支持 resume。\n"
+        "会话开始时先 load 两者；修改项目结构后 save project；"
+        "完成重要步骤后 save session。"
+      ),
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["load", "save"],
+            "description": "load-读取；save-写入（session 会自动归档旧文件）"
+          },
+          "scope": {
+            "type": "string",
+            "enum": ["project", "session"],
+            "description": (
+              "project: 项目知识（必含 ## 项目概览 ## 模块结构 ## 关键文件 ## 设计约定 ## 依赖与外部接口）；\n"
+              "session: 会话进度（必含 ## 当前任务 ## 已完成步骤 ## 关键决定 ## 下一步）"
+            )
+          },
+          "content": {
+            "type": "string",
+            "description": "save 时必填，Markdown 格式"
+          }
+        },
+        "required": ["action", "scope"]
       }
     }
   },
