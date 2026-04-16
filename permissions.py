@@ -80,6 +80,10 @@ def assess_risk(tool_name: str, args: dict) -> RiskLevel:
   if tool_name == "read_file":
     return RiskLevel.SAFE
 
+  # todo 始终安全（只是状态管理，不涉及文件/命令操作）
+  if tool_name == "todo":
+    return RiskLevel.SAFE
+
   # write_file / edit_file 始终危险
   if tool_name in ("write_file", "edit_file"):
     return RiskLevel.DANGEROUS

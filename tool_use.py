@@ -1,5 +1,6 @@
 from pathlib import Path
 import subprocess
+from todo import run_todo, set_global_store, TodoStore
 
 WORKDIR = Path.cwd()
 
@@ -64,7 +65,14 @@ TOOL_HANDLES = {
   "read_file": lambda **kw: run_read(kw["path"], kw.get("limit")),
   "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
   "edit_file": lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
-  "git": lambda **kw: run_git(kw["command"])
+  "git": lambda **kw: run_git(kw["command"]),
+  "todo": lambda **kw: run_todo(
+    kw["action"],
+    id=kw.get("id", ""),
+    content=kw.get("content", ""),
+    status=kw.get("status", ""),
+    activeForm=kw.get("activeForm", ""),
+  ),
 }
 
 TOOL_DEFINITIONS = [
@@ -140,6 +148,41 @@ TOOL_DEFINITIONS = [
           "command": {"type": "string", "description": "git 子命令及参数，如 'log --oneline -10'、'diff'、'status'"}
         },
         "required": ["command"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "todo",
+      "description": "管理待办任务列表，用于规划和跟踪多步骤任务。开始复杂任务前应先创建待办列表，逐步推进并更新状态。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["add", "update", "delete", "list", "clear"],
+            "description": "操作类型：add-添加待办, update-更新状态/内容, delete-删除, list-列出所有, clear-清空"
+          },
+          "id": {
+            "type": "string",
+            "description": "待办项 ID，如 '1', '2', '3'。add/update/delete 时必填"
+          },
+          "content": {
+            "type": "string",
+            "description": "待办项描述。add 时必填，update 时可选"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "in_progress", "completed"],
+            "description": "待办状态：pending-待处理, in_progress-进行中, completed-已完成。update 时可选"
+          },
+          "activeForm": {
+            "type": "string",
+            "description": "进行时描述，如 '正在创建文件'、'正在运行测试'。进行中状态显示此文本替代 content"
+          }
+        },
+        "required": ["action"]
       }
     }
   }

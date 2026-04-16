@@ -12,11 +12,12 @@ from dotenv import load_dotenv
 import json
 from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
-from tool_use import TOOL_HANDLES, TOOL_DEFINITIONS, WORKDIR
+from tool_use import TOOL_HANDLES, TOOL_DEFINITIONS, WORKDIR, set_global_store, TodoStore as _TodoStore
 from permissions import (
   RiskLevel, PermissionStore,
   assess_risk, confirm_permission, get_risk_key,
 )
+from todo import TodoStore
 
 load_dotenv()
 
@@ -113,7 +114,15 @@ _session = PromptSession(key_bindings=_input_kb)
 SystemPrompt = (
   f"你是一个专业的代码助手, 当前工作路径是: {WORKDIR} "
   f"你没有任何关于文件内容的先验知识。"
-  f"读取文件前必须调用 read_file 工具，禁止猜测文件内容。"
+  f"读取文件前必须调用 read_file 工具，禁止猜测文件内容。\n\n"
+  f"## 待办任务规范\n"
+  f"当用户提出多步骤任务时，你必须：\n"
+  f"1. 先用 todo 工具创建待办列表，将任务拆解为有序步骤\n"
+  f"2. 开始执行每一步前，用 todo update 将状态设为 in_progress（并提供 activeForm 描述当前动作）\n"
+  f"3. 完成每一步后，用 todo update 将状态设为 completed\n"
+  f"4. 如果某一步失败，保持 in_progress 状态并告知用户\n"
+  f"5. 单步骤简单任务无需创建待办\n"
+  f"待办 ID 使用递增数字：'1', '2', '3'..."
 )
 MODEL = "GLM-5.1"
 
@@ -228,6 +237,7 @@ TOOL_STYLE = {
   "write_file": ("✏️ ",  "\033[32m"),   # 绿色
   "edit_file":  ("🔧",  "\033[35m"),   # 紫色
   "git":        ("🔀",  "\033[34m"),   # 蓝色
+  "todo":       ("📋",  "\033[36m"),   # 青色
 }
 RESET = "\033[0m"
 DIM   = "\033[2m"
@@ -264,6 +274,19 @@ def _print_tool_call(name: str, args: dict, idx: int, total: int):
     summary = f"{path}  ← {old_preview}"
   elif name == "git":
     summary = _short_preview(args.get("command", ""), 80)
+  elif name == "todo":
+    action = args.get("action", "")
+    tid = args.get("id", "")
+    content = _short_preview(args.get("content", ""), 60)
+    status = args.get("status", "")
+    parts = [action]
+    if tid:
+      parts.append(f"[{tid}]")
+    if content:
+      parts.append(content)
+    if status:
+      parts.append(f"→ {status}")
+    summary = " ".join(parts)
 
   counter = f"[{idx}/{total}] " if total > 1 else ""
   print(f"\n{DIM}{counter}{color}{tag}{RESET}{DIM} {summary}{RESET}")
@@ -295,13 +318,33 @@ state = {
   "messages": [{"role": "system", "content": SystemPrompt}],
   "pending_tool_calls": False,  # 标记上一轮是否有未完成的 tool_calls
   "permissions": PermissionStore(),  # 会话级权限存储
+  "todo_store": TodoStore(),  # 待办任务管理
 }
+
+# 将 todo store 注入到 tool_use 模块
+set_global_store(state["todo_store"])
+
+
+def _print_todo_status(todo_store):
+  """当待办列表有变更时，渲染当前状态"""
+  if not todo_store.is_empty and todo_store.has_changed:
+    rendered = todo_store.render()
+    if rendered:
+      print(f"\n{rendered}")
+    todo_store.mark_displayed()
 
 
 def main_loop(state):
   while True:
     # 如果上一轮是 tool_result，不需要用户输入，直接继续
     if not state["pending_tool_calls"]:
+      # 展示待办进度摘要（在用户输入前）
+      todo_store = state["todo_store"]
+      if not todo_store.is_empty:
+        done, total = todo_store.progress
+        pct = done * 100 // total
+        print(f"\n{DIM}📋 待办进度: {done}/{total} ({pct}%){RESET}")
+
       try:
         user_input = _session.prompt("\n> ")
       except (EOFError, KeyboardInterrupt):
@@ -417,6 +460,9 @@ def main_loop(state):
         })
 
       state["pending_tool_calls"] = True
+
+      # ── 待办状态展示 ──
+      _print_todo_status(state["todo_store"])
 
     elif message.content:
       state["messages"].append({
