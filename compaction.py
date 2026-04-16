@@ -9,6 +9,7 @@
 
 import json
 import hashlib
+import atexit
 from pathlib import Path
 
 # ── 阈值 ──────────────────────────────────────────
@@ -17,7 +18,21 @@ CONTEXT_TRIM      = 80_000   # 整体超过此字符数 → 裁剪旧消息
 CONTEXT_COMPACT   = 150_000  # 裁剪后仍超过 → LLM 压缩
 
 KEEP_RECENT_TURNS = 6        # 裁剪时保留最近几个完整轮次
-OUTPUT_DIR        = Path(".agent_outputs")
+TMP_DIR           = Path.home() / ".mini-claude-code" / "tmp"
+
+# 记录本次会话产生的临时文件，进程退出时统一清理
+_tmp_files: list[Path] = []
+
+
+def _cleanup_tmp():
+    for p in _tmp_files:
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+atexit.register(_cleanup_tmp)
 
 
 # ── 工具函数 ──────────────────────────────────────
@@ -27,15 +42,16 @@ def _char_count(messages: list[dict]) -> int:
 
 
 def _save_output(content: str, label: str) -> str:
-    """把大型输出存到磁盘，返回预览 + 路径引用。"""
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    """把大型输出存到 ~/.mini-claude-code/tmp/，进程退出时自动删除。"""
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
     digest = hashlib.md5(content.encode()).hexdigest()[:8]
-    path = OUTPUT_DIR / f"{label}_{digest}.txt"
+    path = TMP_DIR / f"{label}_{digest}.txt"
     path.write_text(content, encoding="utf-8")
+    _tmp_files.append(path)
     preview = content[:600]
     return (
         f"{preview}\n"
-        f"... [输出过长已存盘: {path}，共 {len(content)} 字符]"
+        f"... [输出过长已暂存: {path}，共 {len(content)} 字符，会话结束后自动删除]"
     )
 
 
