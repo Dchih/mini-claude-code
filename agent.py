@@ -7,7 +7,8 @@ from pathlib import Path
 from openai import OpenAI
 from dotenv import load_dotenv
 import json
-from prompt_toolkit import prompt as pt_prompt
+from prompt_toolkit import PromptSession
+from prompt_toolkit.key_binding import KeyBindings
 from tool_use import TOOL_HANDLES, TOOL_DEFINITIONS, WORKDIR
 from permissions import (
   RiskLevel, PermissionStore,
@@ -65,6 +66,15 @@ def spinner_context(label="思考中"):
       self._t.join()  # 等线程完成清行后再返回
 
   return _Ctx()
+
+
+_input_kb = KeyBindings()
+
+@_input_kb.add("escape", eager=True)
+def _(event):
+  event.app.exit(exception=KeyboardInterrupt())
+
+_session = PromptSession(key_bindings=_input_kb)
 
 
 SystemPrompt = (
@@ -260,7 +270,7 @@ def main_loop(state):
     # 如果上一轮是 tool_result，不需要用户输入，直接继续
     if not state["pending_tool_calls"]:
       try:
-        user_input = pt_prompt("\n> ")
+        user_input = _session.prompt("\n> ")
       except (EOFError, KeyboardInterrupt):
         print("\n再见！")
         break

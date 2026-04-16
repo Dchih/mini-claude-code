@@ -10,6 +10,11 @@ import json
 import shlex
 from enum import Enum
 from typing import Optional
+from prompt_toolkit import Application
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import Layout
+from prompt_toolkit.layout.containers import Window
+from prompt_toolkit.layout.controls import FormattedTextControl
 
 
 # ──────────────────────────────────────────────
@@ -234,6 +239,56 @@ DIM    = "\033[2m"
 RESET  = "\033[0m"
 
 
+def _pick(options: list[tuple[str, str]]) -> Optional[str]:
+  """
+  方向键交互选择器。
+  options: [(key, label), ...]，返回选中的 key，ESC/Ctrl-C 返回 None。
+  """
+  cursor = [0]
+  chosen = [None]
+
+  def get_text():
+    parts: list[tuple[str, str]] = [("", "  ")]
+    for i, (key, label) in enumerate(options):
+      if i > 0:
+        parts.append(("", "   "))
+      if i == cursor[0]:
+        parts.append(("reverse bold", f" [{key}] {label} "))
+      else:
+        parts.append(("", f" [{key}] {label} "))
+    parts.append(("", "\n  "))
+    parts.append(("italic", "← → 选择   Enter 确认   Esc 拒绝"))
+    return parts
+
+  kb = KeyBindings()
+
+  @kb.add("left")
+  def _(event): cursor[0] = (cursor[0] - 1) % len(options)
+
+  @kb.add("right")
+  def _(event): cursor[0] = (cursor[0] + 1) % len(options)
+
+  @kb.add("enter")
+  def _(event):
+    chosen[0] = options[cursor[0]][0]
+    event.app.exit()
+
+  @kb.add("escape")
+  @kb.add("c-c")
+  def _(event): event.app.exit()
+
+  # 同时保留直接按键快捷方式
+  for key, _ in options:
+    @kb.add(key)
+    def handler(event, k=key):
+      chosen[0] = k
+      event.app.exit()
+
+  layout = Layout(Window(FormattedTextControl(get_text, focusable=True)))
+  Application(layout=layout, key_bindings=kb, full_screen=False).run()
+  return chosen[0]
+
+
 def confirm_permission(tool_name: str, args: dict, store: PermissionStore) -> bool:
   """
   交互式权限确认。
@@ -252,32 +307,25 @@ def confirm_permission(tool_name: str, args: dict, store: PermissionStore) -> bo
 
   while True:
     print(f"\n{YELLOW}{BOLD}⚠️  权限请求: {tool_name}{RESET}")
-    # 缩进展示摘要（多行摘要每行缩进）
     for line in summary.splitlines():
       print(f"   {line}")
     print()
-    print(f"  {DIM}[y] 允许一次  [a] 本次会话始终允许  [n] 拒绝  [v] 查看详情{RESET}")
 
-    try:
-      choice = input(f"  {BOLD}> {RESET}").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-      print(f"\n  {RED}已拒绝{RESET}")
+    options = [("y", "允许一次"), ("a", "始终允许"), ("n", "拒绝"), ("v", "查看详情")]
+    choice = _pick(options)
+
+    if choice is None or choice == "n":
+      print(f"\n  {RED}✗ 已拒绝{RESET}")
       return False
-
-    if choice in ("y", "yes"):
+    elif choice == "y":
+      print()
       return True
-    elif choice in ("a", "always"):
+    elif choice == "a":
       store.grant(tool_name, risk_key)
-      print(f"  {GREEN}✓ 已授权: 本次会话中 {tool_name}"
+      print(f"\n  {GREEN}✓ 已授权: 本次会话中 {tool_name}"
             f"{f' ({risk_key})' if risk_key != '*' else ''} 始终允许{RESET}")
       return True
-    elif choice in ("n", "no"):
-      print(f"  {RED}✗ 已拒绝{RESET}")
-      return False
-    elif choice in ("v", "view"):
+    elif choice == "v":
       detail = build_detail(tool_name, args)
       print(f"\n{DIM}{detail}{RESET}")
-      continue
-    else:
-      print(f"  {DIM}无效输入，请选择 y/a/n/v{RESET}")
       continue
