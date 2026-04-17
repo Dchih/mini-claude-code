@@ -3,12 +3,24 @@ from datetime import datetime
 import subprocess
 from todo import run_todo, set_global_store, TodoStore
 from skills import load_skill as _load_skill, get_skills
+from subagent import run_subagent_tool
 
 WORKDIR = Path.cwd()
 _PROJECT_FILE  = Path.home() / ".mini-claude-code" / "project"  / f"{WORKDIR.name}.md"
 _SESSION_DIR   = Path.home() / ".mini-claude-code" / "sessions" / WORKDIR.name
 _SESSION_FILE  = _SESSION_DIR / "current.md"
 _SESSION_KEEP  = 10   # 最多保留多少条历史 session
+
+# ── 子代理的 client/model 引用（由 agent.py 注入） ──
+_subagent_client = None
+_subagent_model = ""
+
+
+def set_subagent_config(client, model: str):
+  """设置子代理的 LLM 客户端和模型名（由 agent.py 启动时调用）"""
+  global _subagent_client, _subagent_model
+  _subagent_client = client
+  _subagent_model = model
 
 def safe_path(p: str) -> Path:
   path = (WORKDIR / p).resolve()
@@ -110,7 +122,7 @@ TOOL_HANDLES = {
   "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
   "edit_file": lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
   "git": lambda **kw: run_git(kw["command"]),
-  "project_memory": lambda **kw: run_project_memory(kw["action"], kw.get("content", "")),
+  "project_memory": lambda **kw: run_project_memory(kw["action"], kw.get("scope", "project"), kw.get("content", "")),
   "todo": lambda **kw: run_todo(
     kw["action"],
     id=kw.get("id", ""),
@@ -119,6 +131,15 @@ TOOL_HANDLES = {
     activeForm=kw.get("activeForm", ""),
   ),
   "load_skill": lambda **kw: _load_skill(kw["name"], get_skills()),
+  "subagent": lambda **kw: run_subagent_tool(
+    task=kw["task"],
+    tools=kw.get("tools"),
+    max_turns=kw.get("max_turns", 10),
+    client=_subagent_client,
+    model=_subagent_model,
+    full_tool_defs=TOOL_DEFINITIONS,
+    all_handlers={k: v for k, v in TOOL_HANDLES.items() if k != "subagent"},
+  ),
 }
 
 TOOL_DEFINITIONS = [
@@ -286,6 +307,37 @@ TOOL_DEFINITIONS = [
           }
         },
         "required": ["name"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "subagent",
+      "description": (
+        "启动子代理执行局部任务。子代理拥有独立的对话历史，"
+        "使用受限工具集（默认只读：bash, read_file, git），"
+        "完成后只返回结构化摘要，不回灌完整过程。"
+        "适用于：探索代码结构、搜索文件内容、分析日志等"
+        "不需要修改文件的信息收集型任务。"
+      ),
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "委派给子代理的任务描述，应具体明确"
+          },
+          "tools": {
+            "type": "string",
+            "description": "逗号分隔的工具名列表，默认 'bash,read_file,git'。子代理只能使用只读工具。"
+          },
+          "max_turns": {
+            "type": "integer",
+            "description": "子代理最大工具调用轮次，默认 10。复杂任务可适当增大。"
+          }
+        },
+        "required": ["task"]
       }
     }
   }

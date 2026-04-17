@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 import json
 from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
-from tool_use import TOOL_HANDLES, TOOL_DEFINITIONS, WORKDIR, set_global_store, TodoStore as _TodoStore
+from tool_use import TOOL_HANDLES, TOOL_DEFINITIONS, WORKDIR, set_global_store, set_subagent_config, TodoStore as _TodoStore
 from skills import scan_skills, build_catalog_text
 from permissions import (
   RiskLevel, PermissionStore,
@@ -140,6 +140,9 @@ SystemPrompt = (
 )
 MODEL = "GLM-5.1"
 
+# 注入子代理的 LLM 配置
+set_subagent_config(client, MODEL)
+
 # ──────────────────────────────────────────────
 # 消息规范化层
 # ──────────────────────────────────────────────
@@ -253,6 +256,7 @@ TOOL_STYLE = {
   "git":        ("🔀",  "\033[34m"),   # 蓝色
   "todo":       ("📋",  "\033[36m"),   # 青色
   "load_skill": ("🎯",  "\033[33m"),   # 黄色
+  "subagent":   ("🤖",  "\033[35m"),   # 紫色
 }
 RESET = "\033[0m"
 DIM   = "\033[2m"
@@ -304,6 +308,10 @@ def _print_tool_call(name: str, args: dict, idx: int, total: int):
     summary = " ".join(parts)
   elif name == "load_skill":
     summary = args.get("name", "")
+  elif name == "subagent":
+    task = _short_preview(args.get("task", ""), 80)
+    max_t = args.get("max_turns", 10)
+    summary = f"{task} (max_turns={max_t})"
 
   counter = f"[{idx}/{total}] " if total > 1 else ""
   print(f"\n{DIM}{counter}{color}{tag}{RESET}{DIM} {summary}{RESET}")

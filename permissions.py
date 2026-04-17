@@ -84,6 +84,10 @@ def assess_risk(tool_name: str, args: dict) -> RiskLevel:
   if tool_name == "todo":
     return RiskLevel.SAFE
 
+  # subagent 内部工具受限（只读），整体视为安全
+  if tool_name == "subagent":
+    return RiskLevel.SAFE
+
   # write_file / edit_file 始终危险
   if tool_name in ("write_file", "edit_file"):
     return RiskLevel.DANGEROUS
