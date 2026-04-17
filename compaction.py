@@ -1,38 +1,20 @@
 """
 上下文压缩模块
 
-三阶段流水线：
-  1. 超大 tool output → 存盘 + 留预览
-  2. 整体 context 偏大 → 旧消息替换为占位
-  3. 整体 context 仍然过大 → LLM 压缩成结构化摘要
+两阶段流水线：
+  1. 整体 context 偏大 → 裁剪旧消息（优先裁 tool output）
+  2. 整体 context 仍然过大 → LLM 压缩成结构化摘要
 """
 
 import json
-import hashlib
-import atexit
 from pathlib import Path
 
 # ── 阈值 ──────────────────────────────────────────
-TOOL_OUTPUT_MAX   = 8_000    # 单条 tool output 超过此字符数 → 存盘
+TOOL_OUTPUT_TRIM  = 400      # 旧 tool output 裁剪到此长度
 CONTEXT_TRIM      = 80_000   # 整体超过此字符数 → 裁剪旧消息
 CONTEXT_COMPACT   = 150_000  # 裁剪后仍超过 → LLM 压缩
 
 KEEP_RECENT_TURNS = 6        # 裁剪时保留最近几个完整轮次
-TMP_DIR           = Path.home() / ".mini-claude-code" / "tmp"
-
-# 记录本次会话产生的临时文件，进程退出时统一清理
-_tmp_files: list[Path] = []
-
-
-def _cleanup_tmp():
-    for p in _tmp_files:
-        try:
-            p.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-
-atexit.register(_cleanup_tmp)
 
 
 # ── 工具函数 ──────────────────────────────────────
@@ -41,41 +23,8 @@ def _char_count(messages: list[dict]) -> int:
     return sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)
 
 
-def _save_output(content: str, label: str) -> str:
-    """把大型输出存到 ~/.mini-claude-code/tmp/，进程退出时自动删除。"""
-    TMP_DIR.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.md5(content.encode()).hexdigest()[:8]
-    path = TMP_DIR / f"{label}_{digest}.txt"
-    path.write_text(content, encoding="utf-8")
-    _tmp_files.append(path)
-    preview = content[:600]
-    return (
-        f"{preview}\n"
-        f"... [输出过长已暂存: {path}，共 {len(content)} 字符，会话结束后自动删除]"
-    )
-
-
-# ── Phase 1：存盘大型 tool output ─────────────────
-
-def offload_large_outputs(messages: list[dict]) -> list[dict]:
-    """对超大 tool output 存盘，原地替换为预览。"""
-    result = []
-    for msg in messages:
-        if msg["role"] == "tool":
-            content = msg.get("content", "")
-            if len(content) > TOOL_OUTPUT_MAX:
-                msg = {**msg, "content": _save_output(content, "tool")}
-        result.append(msg)
-    return result
-
-
-# ── Phase 2：裁剪旧消息 ───────────────────────────
-
 def _count_turns(messages: list[dict]) -> list[int]:
-    """
-    返回每条消息所属的"轮次编号"（从 0 开始）。
-    system 消息属于轮次 -1；每遇到 user 消息轮次 +1。
-    """
+    """每条消息所属的轮次（system=-1，每遇 user 轮次+1）。"""
     turns = []
     turn = -1
     for msg in messages:
@@ -88,10 +37,14 @@ def _count_turns(messages: list[dict]) -> list[int]:
     return turns
 
 
+# ── Phase 1：裁剪旧消息 ───────────────────────────
+
 def trim_old_messages(messages: list[dict]) -> list[dict]:
     """
-    把超出最近 KEEP_RECENT_TURNS 轮的冗长消息替换为单行占位。
-    system 和短消息（< 200 字符）原样保留。
+    对超出最近 KEEP_RECENT_TURNS 轮的消息进行裁剪：
+    - tool output  → 截断到 TOOL_OUTPUT_TRIM 字符
+    - 其他长消息   → 替换为单行占位
+    system 和短消息原样保留。
     """
     turns = _count_turns(messages)
     max_turn = max((t for t in turns if t >= 0), default=0)
@@ -99,17 +52,18 @@ def trim_old_messages(messages: list[dict]) -> list[dict]:
 
     result = []
     for msg, turn in zip(messages, turns):
-        if turn < cutoff:
+        if turn >= 0 and turn < cutoff:
             content = msg.get("content", "")
-            if len(content) > 200:
-                placeholder = f"[{msg['role']} 已压缩，原 {len(content)} 字符]"
-                msg = {**msg, "content": placeholder}
-                # 保留 tool_calls / tool_call_id 等字段不变
+            if msg["role"] == "tool" and len(content) > TOOL_OUTPUT_TRIM:
+                trimmed = content[:TOOL_OUTPUT_TRIM] + f"\n... [已裁剪，原 {len(content)} 字符]"
+                msg = {**msg, "content": trimmed}
+            elif msg["role"] != "tool" and len(content) > 200:
+                msg = {**msg, "content": f"[{msg['role']} 已压缩，原 {len(content)} 字符]"}
         result.append(msg)
     return result
 
 
-# ── Phase 3：LLM 压缩 ────────────────────────────
+# ── Phase 2：LLM 压缩 ────────────────────────────
 
 _COMPACT_SYSTEM = "你是一个对话历史摘要助手，输出简洁、准确的中文结构化摘要。"
 
@@ -159,10 +113,7 @@ def _format_history(messages: list[dict]) -> str:
 
 
 def compact_history(messages: list[dict], client, model: str) -> list[dict]:
-    """
-    调用 LLM 将消息历史压缩为摘要，返回新的精简 messages 列表。
-    失败时退化为激进裁剪，不崩溃。
-    """
+    """调用 LLM 将消息历史压缩为摘要，失败时退化为激进裁剪。"""
     system = messages[0]
     history_text = _format_history(messages[1:])
     prompt = _COMPACT_PROMPT.format(history=history_text)
@@ -171,8 +122,8 @@ def compact_history(messages: list[dict], client, model: str) -> list[dict]:
         resp = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system",  "content": _COMPACT_SYSTEM},
-                {"role": "user",    "content": prompt},
+                {"role": "system", "content": _COMPACT_SYSTEM},
+                {"role": "user",   "content": prompt},
             ],
             temperature=0.2,
             max_tokens=2048,
@@ -206,19 +157,16 @@ def maybe_compact(
     按需执行压缩流水线，返回 (新 messages, 触发阶段描述)。
     阶段描述为空字符串表示未触发任何压缩。
     """
-    # Phase 1：始终执行，存盘大型 tool output
-    messages = offload_large_outputs(messages)
-
     size = _char_count(messages)
     if size < CONTEXT_TRIM:
         return messages, ""
 
-    # Phase 2：裁剪旧消息
+    # Phase 1：裁剪旧消息
     messages = trim_old_messages(messages)
     size = _char_count(messages)
     if size < CONTEXT_COMPACT:
         return messages, "trim"
 
-    # Phase 3：LLM 压缩
+    # Phase 2：LLM 压缩
     messages = compact_history(messages, client, model)
     return messages, "compact"
