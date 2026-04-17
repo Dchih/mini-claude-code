@@ -2,6 +2,7 @@ from pathlib import Path
 from datetime import datetime
 import subprocess
 from todo import run_todo, set_global_store, TodoStore
+from skills import load_skill as _load_skill, get_skills
 
 WORKDIR = Path.cwd()
 _PROJECT_FILE  = Path.home() / ".mini-claude-code" / "project"  / f"{WORKDIR.name}.md"
@@ -117,6 +118,7 @@ TOOL_HANDLES = {
     status=kw.get("status", ""),
     activeForm=kw.get("activeForm", ""),
   ),
+  "load_skill": lambda **kw: _load_skill(kw["name"], get_skills()),
 }
 
 TOOL_DEFINITIONS = [
@@ -263,6 +265,27 @@ TOOL_DEFINITIONS = [
           }
         },
         "required": ["action"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "load_skill",
+      "description": (
+        "按名称加载技能的完整内容。"
+        "system prompt 中列出了所有可用技能的名称和一句话描述，"
+        "当你决定使用某个技能时，调用此工具获取完整指令。"
+      ),
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "技能名称，与 system prompt 中列出的名称一致"
+          }
+        },
+        "required": ["name"]
       }
     }
   }

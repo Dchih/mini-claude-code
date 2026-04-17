@@ -13,6 +13,7 @@ import json
 from prompt_toolkit import PromptSession
 from prompt_toolkit.key_binding import KeyBindings
 from tool_use import TOOL_HANDLES, TOOL_DEFINITIONS, WORKDIR, set_global_store, TodoStore as _TodoStore
+from skills import scan_skills, build_catalog_text
 from permissions import (
   RiskLevel, PermissionStore,
   assess_risk, confirm_permission, get_risk_key,
@@ -135,6 +136,7 @@ SystemPrompt = (
   f"4. 如果某一步失败，保持 in_progress 状态并告知用户\n"
   f"5. 单步骤简单任务无需创建待办\n"
   f"待办 ID 使用递增数字：'1', '2', '3'..."
+  + build_catalog_text(scan_skills())
 )
 MODEL = "GLM-5.1"
 
@@ -250,6 +252,7 @@ TOOL_STYLE = {
   "edit_file":  ("🔧",  "\033[35m"),   # 紫色
   "git":        ("🔀",  "\033[34m"),   # 蓝色
   "todo":       ("📋",  "\033[36m"),   # 青色
+  "load_skill": ("🎯",  "\033[33m"),   # 黄色
 }
 RESET = "\033[0m"
 DIM   = "\033[2m"
@@ -299,6 +302,8 @@ def _print_tool_call(name: str, args: dict, idx: int, total: int):
     if status:
       parts.append(f"→ {status}")
     summary = " ".join(parts)
+  elif name == "load_skill":
+    summary = args.get("name", "")
 
   counter = f"[{idx}/{total}] " if total > 1 else ""
   print(f"\n{DIM}{counter}{color}{tag}{RESET}{DIM} {summary}{RESET}")
